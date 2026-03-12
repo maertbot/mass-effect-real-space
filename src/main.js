@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { gsap } from 'gsap';
 
 import { AudioEngine } from './audio-engine.js';
 import { PlanetPreview } from './planet-view.js';
@@ -15,13 +16,15 @@ const SEARCH_RESULT_LIMIT = 8;
 const BLOOM_STRENGTH = 1.05;
 const BLOOM_RADIUS = 0.72;
 const BLOOM_THRESHOLD = 0.05;
+const DEFAULT_CAMERA_POSITION = new THREE.Vector3(0, 120, 450);
+const INTRO_CAMERA_MULTIPLIER = 5;
+const INTRO_DURATION_SECONDS = 5;
+const PERFORMANCE_SAMPLE_COUNT = 180;
+const PERFORMANCE_FPS_THRESHOLD = 55;
+const TEXT_VALUE_FIELDS = new Set(['planetName', 'hostStar', 'discoveryMethod']);
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
-}
-
-function lerp(start, end, alpha) {
-  return start + (end - start) * alpha;
 }
 
 function easeInOutCubic(t) {
@@ -54,161 +57,162 @@ function buildFilterChips(group, labels) {
     .join('');
 }
 
-function createLayout() {
+function createLayout(meta) {
   const app = document.querySelector('#app');
   const isDev = import.meta.env.DEV;
 
   app.innerHTML = `
     <main class="app-shell">
+      <div class="background-halo" aria-hidden="true"></div>
       <canvas class="scene-canvas" aria-label="Mass Effect Real Space galaxy map"></canvas>
+
       <div class="scene-overlay">
-        <div class="hud-grid" aria-hidden="true"></div>
+        <div class="grain-layer" aria-hidden="true"></div>
+        <div class="vignette-layer" aria-hidden="true"></div>
 
-        <header class="topbar">
-          <section class="brand-panel">
-            <div class="brand-eyebrow">Systems Alliance Cartography</div>
-            <h1 class="brand-title">Mass Effect:<br />Real Space</h1>
-            <p class="brand-subtitle">
-              Real NASA exoplanets, projected into galactic 3D space with bloom, scan overlays, and live stellar telemetry.
-            </p>
-            <div class="brand-stats">
-              <div class="status-pill">
-                Visible Systems
-                <span data-stat-visible>0</span>
+        <div class="intro-overlay" data-intro-overlay>
+          <div class="intro-title" data-intro-title>MASS EFFECT: REAL SPACE</div>
+          <div class="intro-subtitle" data-intro-subtitle>${meta.planetCount.toLocaleString()} Real NASA Exoplanets</div>
+        </div>
+
+        <div class="ui-layer" data-ui-layer>
+          <header class="command-deck" data-command-deck>
+            <div class="command-deck__mark">MASS EFFECT: REAL SPACE</div>
+
+            <div class="search-stack">
+              <div class="search-shell glass-panel" data-search-shell>
+                <div class="search-row">
+                  <input
+                    class="search-input"
+                    id="search-input"
+                    name="search-input"
+                    type="search"
+                    autocomplete="off"
+                    aria-label="Search exoplanets or host stars"
+                    placeholder="Search ${meta.planetCount.toLocaleString()} exoplanets..."
+                  />
+                  <button class="filter-button" type="button" data-filter-toggle aria-label="Toggle filters" aria-expanded="false">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                  </button>
+                </div>
+
+                <div class="search-summary" data-filter-summary>
+                  <span class="search-summary__count" data-filter-count></span>
+                  <span class="search-summary__status" data-filter-status></span>
+                </div>
               </div>
-              <div class="status-pill">
-                Total Planets
-                <span data-stat-planets>0</span>
+
+              <div class="filter-panel glass-panel" data-filter-panel>
+                <section class="filter-group">
+                  <div class="panel-label">By Survey</div>
+                  <div class="filter-chip-row">${buildFilterChips('survey', SURVEY_LABELS)}</div>
+                </section>
+
+                <section class="filter-group">
+                  <div class="panel-label">By Type</div>
+                  <div class="filter-chip-row">${buildFilterChips('type', PLANET_TYPE_LABELS)}</div>
+                </section>
+
+                <section class="filter-group">
+                  <div class="panel-label">By Spectral Class</div>
+                  <div class="filter-chip-row">${buildFilterChips('spectral', SPECTRAL_CLASS_LABELS)}</div>
+                </section>
               </div>
-              <div class="status-pill">
-                Spatial Coverage
-                <span data-stat-coverage>0</span>
+
+              <div class="search-results glass-panel" data-search-results></div>
+            </div>
+          </header>
+
+          <section class="scan-panel glass-panel" data-scan-panel>
+            <div class="scan-panel__beam" aria-hidden="true"></div>
+
+            <div class="scan-header">
+              <div>
+                <div class="panel-label">Planet Scan</div>
+                <h2 class="scan-title" data-scan-title>System Offline</h2>
+                <p class="scan-subtitle" data-scan-subtitle>Select a star to open the planetary dossier.</p>
+              </div>
+              <button class="close-button" type="button" data-close-panel>Close</button>
+            </div>
+
+            <div class="planet-pills" data-planet-pills></div>
+
+            <div class="planet-layout">
+              <div class="planet-stage" data-planet-stage></div>
+              <div class="data-grid">
+                ${[
+                  ['Planet Name', 'planetName'],
+                  ['Host Star', 'hostStar'],
+                  ['Mass', 'massEarth'],
+                  ['Radius', 'radiusEarth'],
+                  ['Orbital Period', 'orbitalPeriodDays'],
+                  ['Equilibrium Temp', 'equilibriumTempK'],
+                  ['Semi-Major Axis', 'semiMajorAxisAu'],
+                  ['Discovery Method', 'discoveryMethod'],
+                  ['Discovery Year', 'discoveryYear'],
+                ]
+                  .map(
+                    ([label, key]) => `
+                      <div class="data-row ${TEXT_VALUE_FIELDS.has(key) ? 'data-row--text' : ''}" data-field-row="${key}">
+                        <div class="data-row__label">${label}</div>
+                        <div class="data-row__value" data-field-value="${key}">Awaiting scan...</div>
+                      </div>
+                    `,
+                  )
+                  .join('')}
               </div>
             </div>
           </section>
 
-          <section class="search-panel">
-            <label class="search-label" for="search-input">Search Planet Or Host Star</label>
-            <input
-              class="search-input"
-              id="search-input"
-              name="search-input"
-              type="search"
-              autocomplete="off"
-              placeholder="Try Kepler-442, Proxima Cen, or TOI-700 d"
-            />
-            <div class="search-results" data-search-results></div>
-          </section>
+          <div class="tooltip glass-panel" data-tooltip></div>
 
-          <aside class="status-pip">
-            <div class="status-pip__line">
-              <span>Audio</span>
-              <span class="audio-status" data-audio-status>Awaiting first click</span>
+          <footer class="corner-tools">
+            <div class="corner-tools__meta">
+              <a
+                class="archive-credit"
+                href="https://exoplanetarchive.ipac.caltech.edu/"
+                target="_blank"
+                rel="noreferrer"
+              >
+                NASA Exoplanet Archive
+              </a>
+              <div class="fps-badge" ${isDev ? '' : 'hidden'} data-fps-badge>FPS: --</div>
             </div>
-            <div class="status-pip__line">
-              <span>Current Focus</span>
-              <span data-focus-status>Free navigation</span>
+
+            <div class="help-cluster">
+              <button class="help-button" type="button" aria-label="Show controls">?</button>
+              <div class="help-card glass-panel">
+                <div class="panel-label">Controls</div>
+                <div class="help-line">Drag: orbit</div>
+                <div class="help-line">Right drag: pan</div>
+                <div class="help-line">Scroll: zoom</div>
+                <div class="help-line">WASD: drift</div>
+                <div class="help-line">Click a star: scan + audio</div>
+              </div>
             </div>
-            <div class="status-pip__line">
-              <span>Filter Mode</span>
-              <span data-filter-status>All systems</span>
-            </div>
-          </aside>
-        </header>
-
-        <aside class="filter-panel" data-filter-panel>
-          <div class="filter-panel__header">
-            <div>
-              <div class="panel-label">Tactical Filters</div>
-              <div class="filter-count" data-filter-count>0 systems highlighted</div>
-            </div>
-            <button class="collapse-toggle" type="button" data-filter-toggle>Collapse</button>
-          </div>
-
-          <div class="filter-panel__body">
-            <section class="filter-group">
-              <h2 class="filter-group__title">By Survey</h2>
-              <div class="filter-chip-row">${buildFilterChips('survey', SURVEY_LABELS)}</div>
-            </section>
-
-            <section class="filter-group">
-              <h2 class="filter-group__title">By Type</h2>
-              <div class="filter-chip-row">${buildFilterChips('type', PLANET_TYPE_LABELS)}</div>
-            </section>
-
-            <section class="filter-group">
-              <h2 class="filter-group__title">By Spectral Class</h2>
-              <div class="filter-chip-row">${buildFilterChips('spectral', SPECTRAL_CLASS_LABELS)}</div>
-            </section>
-          </div>
-        </aside>
-
-        <section class="scan-panel" data-scan-panel>
-          <div class="scan-panel__beam" aria-hidden="true"></div>
-          <div class="scan-header">
-            <div>
-              <div class="panel-label">Planet Scan</div>
-              <h2 class="scan-title" data-scan-title>System Offline</h2>
-              <p class="scan-subtitle" data-scan-subtitle>Select a star to open the planetary dossier.</p>
-            </div>
-            <button class="close-button" type="button" data-close-panel>Close</button>
-          </div>
-          <div class="planet-pills" data-planet-pills></div>
-          <div class="planet-layout">
-            <div class="planet-stage" data-planet-stage></div>
-            <div class="data-grid" data-data-grid>
-              ${[
-                ['Planet Name', 'planetName'],
-                ['Host Star', 'hostStar'],
-                ['Mass', 'massEarth'],
-                ['Radius', 'radiusEarth'],
-                ['Orbital Period', 'orbitalPeriodDays'],
-                ['Equilibrium Temp', 'equilibriumTempK'],
-                ['Semi-Major Axis', 'semiMajorAxisAu'],
-                ['Discovery Method', 'discoveryMethod'],
-                ['Discovery Year', 'discoveryYear'],
-              ]
-                .map(
-                  ([label, key]) => `
-                    <div class="data-row" data-field-row="${key}">
-                      <div class="data-row__label">${label}</div>
-                      <div class="data-row__value" data-field-value="${key}">Awaiting scan...</div>
-                    </div>
-                  `,
-                )
-                .join('')}
-            </div>
-          </div>
-        </section>
-
-        <div class="tooltip" data-tooltip></div>
-
-        <footer class="bottom-strip">
-          <div class="bottom-strip__copy" data-bottom-copy>
-            Normandy hum standby. Use orbit, pan, zoom, or WASD to move through the archive.
-          </div>
-          <div class="bottom-strip__metrics">
-            <div class="fps-badge" ${isDev ? '' : 'hidden'} data-fps-badge>FPS: --</div>
-            <div class="audio-status">NASA Exoplanet Archive</div>
-          </div>
-        </footer>
+          </footer>
+        </div>
       </div>
     </main>
   `;
 }
 
+function configureVisualFallbacks() {
+  const supportsBackdrop =
+    (window.CSS && window.CSS.supports('backdrop-filter: blur(1px)')) ||
+    (window.CSS && window.CSS.supports('-webkit-backdrop-filter: blur(1px)'));
+
+  document.documentElement.classList.toggle('effects-reduced', !supportsBackdrop);
+}
+
 function createNebulaTexture(seed, colorHex) {
   const canvas = document.createElement('canvas');
-  const size = 1024;
+  const size = 512;
   canvas.width = size;
   canvas.height = size;
   const context = canvas.getContext('2d');
-  const gradient = context.createRadialGradient(size * 0.5, size * 0.5, 0, size * 0.5, size * 0.5, size * 0.48);
-  gradient.addColorStop(0, 'rgba(255,255,255,0)');
-  gradient.addColorStop(1, 'rgba(255,255,255,0)');
-  context.fillStyle = gradient;
-  context.fillRect(0, 0, size, size);
-
   const image = context.createImageData(size, size);
   const base = new THREE.Color(colorHex);
 
@@ -235,14 +239,14 @@ function createNebulaTexture(seed, colorHex) {
 
   function fbm(x, y, extraSeed) {
     let total = 0;
-    let amplitude = 0.55;
+    let amplitude = 0.58;
     let frequency = 1;
     let sum = 0;
 
-    for (let octave = 0; octave < 5; octave += 1) {
-      total += noise(x * frequency, y * frequency, extraSeed + octave * 8.13) * amplitude;
+    for (let octave = 0; octave < 4; octave += 1) {
+      total += noise(x * frequency, y * frequency, extraSeed + octave * 11.27) * amplitude;
       sum += amplitude;
-      amplitude *= 0.5;
+      amplitude *= 0.52;
       frequency *= 2;
     }
 
@@ -255,14 +259,14 @@ function createNebulaTexture(seed, colorHex) {
     for (let x = 0; x < size; x += 1) {
       const normalizedX = x / size - 0.5;
       const radius = Math.sqrt(normalizedX * normalizedX + normalizedY * normalizedY);
-      const wisps = fbm(normalizedX * 4 + seed, normalizedY * 4 - seed, seed * 7.1);
-      const ribbon = Math.sin((normalizedX + normalizedY + seed) * 7 + wisps * 10) * 0.5 + 0.5;
-      const density = clamp((1 - radius * 1.85) * (wisps * 0.9 + ribbon * 0.35), 0, 1);
-      const alpha = density * density * 170;
+      const wisps = fbm(normalizedX * 4.6 + seed, normalizedY * 4.6 - seed, seed * 5.41);
+      const swirl = Math.sin((normalizedX * 3.8 - normalizedY * 2.2 + seed) * 7.5 + wisps * 9) * 0.5 + 0.5;
+      const density = clamp((1 - radius * 1.7) * (wisps * 0.74 + swirl * 0.26), 0, 1);
+      const alpha = density * density * 92;
       const index = (y * size + x) * 4;
-      image.data[index] = Math.round(base.r * 255 * clamp(0.4 + density, 0, 1));
-      image.data[index + 1] = Math.round(base.g * 255 * clamp(0.4 + density, 0, 1));
-      image.data[index + 2] = Math.round(base.b * 255 * clamp(0.5 + density, 0, 1));
+      image.data[index] = Math.round(base.r * 255 * clamp(0.42 + density * 0.75, 0, 1));
+      image.data[index + 1] = Math.round(base.g * 255 * clamp(0.42 + density * 0.75, 0, 1));
+      image.data[index + 2] = Math.round(base.b * 255 * clamp(0.52 + density * 0.68, 0, 1));
       image.data[index + 3] = Math.round(alpha);
     }
   }
@@ -273,25 +277,45 @@ function createNebulaTexture(seed, colorHex) {
   return texture;
 }
 
-function buildNebulaPlanes(scene) {
-  const textures = [
-    createNebulaTexture(1.2, '#243e7f'),
-    createNebulaTexture(3.6, '#3f336f'),
-    createNebulaTexture(6.1, '#1b4362'),
+function getKeplerCentroid(renderableSystems) {
+  const keplerSystems = renderableSystems.filter((system) => system.survey === 'Kepler');
+  const systems = keplerSystems.length ? keplerSystems : renderableSystems;
+  const centroid = new THREE.Vector3();
+
+  systems.forEach((system) => {
+    centroid.add(new THREE.Vector3(system.galactic.x * SCENE_SCALE, system.galactic.y * SCENE_SCALE, system.galactic.z * SCENE_SCALE));
+  });
+
+  return centroid.divideScalar(systems.length || 1);
+}
+
+function buildNebulaPlanes(scene, renderableSystems) {
+  const anchor = getKeplerCentroid(renderableSystems);
+  const colors = ['#1f3e7a', '#342f67', '#224766', '#3d356f', '#2a335d'];
+  const offsets = [
+    new THREE.Vector3(0, 18, -120),
+    new THREE.Vector3(92, -44, -168),
+    new THREE.Vector3(-110, 64, -214),
+    new THREE.Vector3(54, 122, -262),
+    new THREE.Vector3(-78, -92, -318),
   ];
 
-  return textures.map((texture, index) => {
+  return offsets.map((offset, index) => {
+    const texture = createNebulaTexture(index + 1.4, colors[index % colors.length]);
     const material = new THREE.MeshBasicMaterial({
       map: texture,
       transparent: true,
-      opacity: index === 1 ? 0.24 : 0.18,
+      opacity: 0.024 + index * 0.005,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     });
 
-    const plane = new THREE.Mesh(new THREE.PlaneGeometry(420, 280), material);
-    plane.position.set(index * 80 - 90, index * 42 - 40, -220 - index * 110);
-    plane.rotation.z = index * 0.34;
+    const width = 320 + index * 42;
+    const height = 220 + index * 28;
+    const plane = new THREE.Mesh(new THREE.PlaneGeometry(width, height), material);
+    plane.position.copy(anchor).add(offset);
+    plane.rotation.z = index * 0.28;
+    plane.userData.anchor = plane.position.clone();
     scene.add(plane);
     return plane;
   });
@@ -330,14 +354,14 @@ function buildSearchIndex(data) {
 
 function buildFieldValueMap(system, planet) {
   return {
-    planetName: `<strong>${planet.name}</strong>`,
-    hostStar: system.hostname,
+    planetName: `<span class="value-text">${planet.name}</span>`,
+    hostStar: `<span class="value-text">${system.hostname}</span>`,
     massEarth: formatValue(planet.planet.massEarth, 2, ' M⊕'),
     radiusEarth: formatValue(planet.planet.radiusEarth, 2, ' R⊕'),
     orbitalPeriodDays: formatValue(planet.planet.orbitalPeriodDays, 2, ' days'),
     equilibriumTempK: formatValue(planet.planet.equilibriumTempK, 0, ' K'),
     semiMajorAxisAu: formatValue(planet.planet.semiMajorAxisAu, 3, ' AU'),
-    discoveryMethod: planet.discovery.method ?? 'N/A',
+    discoveryMethod: `<span class="value-text">${planet.discovery.method ?? 'N/A'}</span>`,
     discoveryYear: formatValue(planet.discovery.year, 0),
   };
 }
@@ -384,17 +408,25 @@ function createState(data) {
     selectedSystemId: null,
     selectedPlanetId: null,
     searchResults: [],
+    searchResultsVisible: false,
     searchMatchSystemIds: new Set(),
     searchIndex: buildSearchIndex(data),
     flyAnimation: null,
     keys: new Set(),
     scanTimers: [],
-    filterCollapsed: false,
+    filtersVisible: false,
+    filtersPinned: false,
+    introComplete: false,
     pointer: new THREE.Vector2(2, 2),
     pointerScreen: { x: 0, y: 0 },
     needsHoverUpdate: true,
     fpsHistory: [],
     lastFrameTime: performance.now(),
+    performanceGate: {
+      active: false,
+      reduced: document.documentElement.classList.contains('effects-reduced'),
+      samples: [],
+    },
   };
 }
 
@@ -424,10 +456,26 @@ function systemMatchesFilters(system, filters) {
   return true;
 }
 
+function setFiltersVisible(state, refs, visible, pinned = state.filtersPinned) {
+  state.filtersVisible = visible;
+  state.filtersPinned = visible ? pinned : false;
+  refs.filterToggle.setAttribute('aria-expanded', visible ? 'true' : 'false');
+  refs.filterPanel.classList.toggle('is-visible', visible);
+  refs.searchShell.classList.toggle('is-active', visible || state.searchResultsVisible);
+}
+
+function hideCommandDeckPanels(state, refs) {
+  state.searchResultsVisible = false;
+  setFiltersVisible(state, refs, false, false);
+  refs.searchResults.classList.remove('is-visible');
+  refs.searchShell.classList.toggle('is-active', false);
+}
+
 function runSearch(state, query) {
   const normalizedQuery = normalizeText(query);
   if (!normalizedQuery) {
     state.searchResults = [];
+    state.searchResultsVisible = false;
     state.searchMatchSystemIds = new Set();
     return;
   }
@@ -448,17 +496,20 @@ function runSearch(state, query) {
 
   scored.sort((left, right) => left.score - right.score || left.label.localeCompare(right.label));
   state.searchResults = scored.slice(0, SEARCH_RESULT_LIMIT);
+  state.searchResultsVisible = state.searchResults.length > 0;
   state.searchMatchSystemIds = new Set(scored.map((entry) => entry.systemId));
 }
 
 function updateSearchResults(state, refs, onResultClick) {
-  if (!state.searchResults.length) {
+  if (!state.searchResults.length || !state.searchResultsVisible) {
     refs.searchResults.classList.remove('is-visible');
     refs.searchResults.innerHTML = '';
+    refs.searchShell.classList.toggle('is-active', state.filtersVisible);
     return;
   }
 
   refs.searchResults.classList.add('is-visible');
+  refs.searchShell.classList.add('is-active');
   refs.searchResults.innerHTML = state.searchResults
     .map(
       (result) => `
@@ -466,7 +517,7 @@ function updateSearchResults(state, refs, onResultClick) {
           result.planetId ? `data-planet-id="${result.planetId}"` : ''
         }>
           <span class="result-title">${result.label}</span>
-          <span class="result-meta">${result.kind === 'planet' ? 'Planet' : 'Host Star'} • ${result.meta}</span>
+          <span class="result-meta">${result.kind === 'planet' ? 'PLANET' : 'HOST STAR'} • ${result.meta}</span>
         </button>
       `,
     )
@@ -477,6 +528,20 @@ function updateSearchResults(state, refs, onResultClick) {
       onResultClick(button.dataset.systemId, button.dataset.planetId ?? null);
     });
   });
+}
+
+function updateFilterSummary(state, refs, visibleCount) {
+  const activeFilters = Object.values(state.activeFilters).filter(Boolean);
+  if (!activeFilters.length) {
+    refs.filterSummary.classList.remove('is-visible');
+    refs.filterCount.textContent = '';
+    refs.filterStatus.textContent = '';
+    return;
+  }
+
+  refs.filterCount.textContent = `${visibleCount.toLocaleString()} of ${state.data.meta.systemCount.toLocaleString()} systems`;
+  refs.filterStatus.textContent = activeFilters.join(' • ');
+  refs.filterSummary.classList.add('is-visible');
 }
 
 function createStarField(renderableSystems) {
@@ -595,14 +660,15 @@ function updateStarAttributes(state, starField, refs) {
   focusAttr.needsUpdate = true;
   visibilityAttr.needsUpdate = true;
   searchAttr.needsUpdate = true;
-
-  refs.filterCount.textContent = `${visibleCount.toLocaleString()} systems highlighted`;
-  refs.statVisible.textContent = visibleCount.toLocaleString();
-  const activeFilters = Object.values(state.activeFilters).filter(Boolean);
-  refs.filterStatus.textContent = activeFilters.length ? activeFilters.join(' • ') : 'All systems';
+  updateFilterSummary(state, refs, visibleCount);
 }
 
 function updateTooltip(state, refs) {
+  if (!state.introComplete) {
+    refs.tooltip.classList.remove('is-visible');
+    return;
+  }
+
   const system = state.hoveredSystemId ? state.systemsById.get(state.hoveredSystemId) : null;
   if (!system) {
     refs.tooltip.classList.remove('is-visible');
@@ -612,15 +678,15 @@ function updateTooltip(state, refs) {
   refs.tooltip.innerHTML = `
     <div class="tooltip-title">${system.hostname}</div>
     <div class="tooltip-meta">
-      ${formatValue(system.distanceLy, 1, ' ly')}<br />
-      Spectral: ${system.spectralType || system.spectralClass || 'Unknown'}<br />
-      Planets: ${system.planetCount}
+      <span>${formatValue(system.distanceLy, 1, ' ly')}</span>
+      <span>${system.spectralType || system.spectralClass || 'Unknown'}</span>
+      <span>${system.planetCount} planets</span>
     </div>
   `;
 
   refs.tooltip.classList.add('is-visible');
   const tooltipWidth = 220;
-  const tooltipHeight = 110;
+  const tooltipHeight = 92;
   const left = clamp(state.pointerScreen.x + 18, 12, window.innerWidth - tooltipWidth - 12);
   const top = clamp(state.pointerScreen.y + 18, 12, window.innerHeight - tooltipHeight - 12);
   refs.tooltip.style.transform = `translate3d(${left}px, ${top}px, 0)`;
@@ -691,11 +757,10 @@ function focusSystem(state, refs, controls, systemId, planetId = null) {
 
   state.selectedSystemId = system.id;
   state.selectedPlanetId = selectedPlanet.id;
-  refs.searchResults.classList.remove('is-visible');
-  refs.focusStatus.textContent = selectedPlanet.name;
-  refs.bottomCopy.textContent = `${selectedPlanet.name} dossier synced. ${system.hostname} at ${formatValue(system.distanceLy, 1, ' ly')}.`;
-
   refs.scanPanel.classList.add('is-visible');
+  refs.searchResults.classList.remove('is-visible');
+  hideCommandDeckPanels(state, refs);
+
   updatePlanetPills(state, refs, system, selectedPlanet.id, (nextPlanetId) =>
     focusSystem(state, refs, controls, system.id, nextPlanetId),
   );
@@ -723,8 +788,6 @@ function closePanel(state, refs) {
   state.flyAnimation = null;
   clearScanTimers(state);
   refs.scanPanel.classList.remove('is-visible', 'is-scanning');
-  refs.focusStatus.textContent = 'Free navigation';
-  refs.bottomCopy.textContent = 'Normandy hum standby. Use orbit, pan, zoom, or WASD to move through the archive.';
 }
 
 function updateFlight(state, controls) {
@@ -745,7 +808,7 @@ function updateFlight(state, controls) {
 }
 
 function updateKeyboardMovement(state, controls, delta) {
-  if (!state.keys.size || state.flyAnimation) {
+  if (!state.introComplete || !state.keys.size || state.flyAnimation) {
     return;
   }
 
@@ -771,16 +834,92 @@ function updateKeyboardMovement(state, controls, delta) {
   controls.target.add(deltaVector);
 }
 
+function startIntroSequence(state, refs, camera, controls) {
+  const introCameraPosition = DEFAULT_CAMERA_POSITION.clone().multiplyScalar(INTRO_CAMERA_MULTIPLIER);
+  camera.position.copy(introCameraPosition);
+  controls.target.set(0, 0, 0);
+  controls.update();
+  controls.enabled = false;
+
+  refs.appShell.classList.remove('is-ui-visible');
+  gsap.set(refs.uiLayer, { autoAlpha: 0 });
+  gsap.set(refs.introOverlay, { autoAlpha: 0 });
+  gsap.set([refs.introTitle, refs.introSubtitle], { y: 18 });
+
+  const timeline = gsap.timeline({
+    defaults: { ease: 'power2.inOut' },
+    onStart: () => {
+      refs.appShell.classList.add('is-intro-running');
+    },
+    onComplete: () => {
+      state.introComplete = true;
+      state.performanceGate.active = !state.performanceGate.reduced;
+      refs.appShell.classList.remove('is-intro-running');
+      refs.appShell.classList.add('is-ui-visible');
+      controls.enabled = true;
+    },
+  });
+
+  timeline.to(camera.position, {
+    x: DEFAULT_CAMERA_POSITION.x,
+    y: DEFAULT_CAMERA_POSITION.y,
+    z: DEFAULT_CAMERA_POSITION.z,
+    duration: INTRO_DURATION_SECONDS,
+  }, 0);
+
+  timeline.to(refs.introOverlay, { autoAlpha: 1, duration: 0.9 }, 1);
+  timeline.to(refs.introTitle, { y: 0, duration: 0.9 }, 1);
+  timeline.to(refs.introSubtitle, { y: 0, duration: 0.9 }, 1.1);
+  timeline.to(refs.introOverlay, { autoAlpha: 0, duration: 0.8 }, 4);
+  timeline.to(refs.uiLayer, { autoAlpha: 1, duration: 0.8 }, 4.35);
+
+  return timeline;
+}
+
+function maybeReduceEffects(state) {
+  if (!state.performanceGate.active || state.performanceGate.reduced || state.performanceGate.samples.length < PERFORMANCE_SAMPLE_COUNT) {
+    return;
+  }
+
+  const average =
+    state.performanceGate.samples.reduce((sum, fps) => sum + fps, 0) / Math.max(state.performanceGate.samples.length, 1);
+
+  state.performanceGate.active = false;
+  if (average >= PERFORMANCE_FPS_THRESHOLD) {
+    return;
+  }
+
+  document.documentElement.classList.add('effects-reduced');
+  state.performanceGate.reduced = true;
+}
+
 async function init() {
-  createLayout();
+  configureVisualFallbacks();
+
+  const response = await fetch(`${import.meta.env.BASE_URL}data/exoplanets.json`);
+  if (!response.ok) {
+    throw new Error(`Failed to load exoplanet archive: ${response.status}`);
+  }
+
+  const data = await response.json();
+  createLayout(data.meta);
 
   const refs = {
+    appShell: document.querySelector('.app-shell'),
     canvas: document.querySelector('.scene-canvas'),
+    uiLayer: document.querySelector('[data-ui-layer]'),
+    introOverlay: document.querySelector('[data-intro-overlay]'),
+    introTitle: document.querySelector('[data-intro-title]'),
+    introSubtitle: document.querySelector('[data-intro-subtitle]'),
+    commandDeck: document.querySelector('[data-command-deck]'),
+    searchShell: document.querySelector('[data-search-shell]'),
     searchInput: document.querySelector('.search-input'),
     searchResults: document.querySelector('[data-search-results]'),
     filterPanel: document.querySelector('[data-filter-panel]'),
     filterToggle: document.querySelector('[data-filter-toggle]'),
+    filterSummary: document.querySelector('[data-filter-summary]'),
     filterCount: document.querySelector('[data-filter-count]'),
+    filterStatus: document.querySelector('[data-filter-status]'),
     scanPanel: document.querySelector('[data-scan-panel]'),
     scanTitle: document.querySelector('[data-scan-title]'),
     scanSubtitle: document.querySelector('[data-scan-subtitle]'),
@@ -788,13 +927,6 @@ async function init() {
     planetStage: document.querySelector('[data-planet-stage]'),
     tooltip: document.querySelector('[data-tooltip]'),
     closePanel: document.querySelector('[data-close-panel]'),
-    bottomCopy: document.querySelector('[data-bottom-copy]'),
-    audioStatus: document.querySelector('[data-audio-status]'),
-    focusStatus: document.querySelector('[data-focus-status]'),
-    filterStatus: document.querySelector('[data-filter-status]'),
-    statVisible: document.querySelector('[data-stat-visible]'),
-    statPlanets: document.querySelector('[data-stat-planets]'),
-    statCoverage: document.querySelector('[data-stat-coverage]'),
     fpsBadge: document.querySelector('[data-fps-badge]'),
     fieldValues: Object.fromEntries(
       [...document.querySelectorAll('[data-field-value]')].map((element) => [element.dataset.fieldValue, element]),
@@ -804,14 +936,9 @@ async function init() {
     ),
   };
 
-  const response = await fetch(`${import.meta.env.BASE_URL}data/exoplanets.json`);
-  const data = await response.json();
   const state = createState(data);
   const audioEngine = new AudioEngine();
   refs.planetPreview = new PlanetPreview(refs.planetStage);
-
-  refs.statPlanets.textContent = data.meta.planetCount.toLocaleString();
-  refs.statCoverage.textContent = `${Math.round((data.meta.renderablePlanetCount / data.meta.planetCount) * 100)}%`;
 
   const renderer = new THREE.WebGLRenderer({
     canvas: refs.canvas,
@@ -824,28 +951,34 @@ async function init() {
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x000000);
-  scene.fog = new THREE.FogExp2(0x01030a, 0.0018);
+  scene.fog = new THREE.FogExp2(0x01030a, 0.0017);
 
-  const camera = new THREE.PerspectiveCamera(54, window.innerWidth / window.innerHeight, 0.1, 3000);
-  camera.position.set(0, 120, 450);
+  const camera = new THREE.PerspectiveCamera(54, window.innerWidth / window.innerHeight, 0.1, 7000);
+  camera.position.copy(DEFAULT_CAMERA_POSITION.clone().multiplyScalar(INTRO_CAMERA_MULTIPLIER));
 
   const controls = new OrbitControls(camera, refs.canvas);
   controls.enableDamping = true;
   controls.dampingFactor = 0.06;
   controls.minDistance = 12;
-  controls.maxDistance = 1200;
+  controls.maxDistance = 2800;
   controls.enablePan = true;
   controls.target.set(0, 0, 0);
+  controls.enabled = false;
 
   const composer = new EffectComposer(renderer);
   const renderPass = new RenderPass(scene, camera);
-  const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD);
+  const bloomPass = new UnrealBloomPass(
+    new THREE.Vector2(window.innerWidth, window.innerHeight),
+    BLOOM_STRENGTH,
+    BLOOM_RADIUS,
+    BLOOM_THRESHOLD,
+  );
   composer.addPass(renderPass);
   composer.addPass(bloomPass);
 
   const starField = createStarField(state.renderableSystems);
   scene.add(starField.points);
-  const nebulaPlanes = buildNebulaPlanes(scene);
+  const nebulaPlanes = buildNebulaPlanes(scene, state.renderableSystems);
 
   const dustGeometry = new THREE.BufferGeometry();
   const dustCount = 1400;
@@ -865,7 +998,7 @@ async function init() {
       color: '#5d7cb6',
       size: 1.1,
       transparent: true,
-      opacity: 0.24,
+      opacity: 0.16,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     }),
@@ -886,10 +1019,32 @@ async function init() {
 
   window.addEventListener('resize', resize);
 
+  refs.searchInput.addEventListener('focus', () => {
+    if (!state.introComplete) {
+      return;
+    }
+
+    setFiltersVisible(state, refs, true, false);
+    if (refs.searchInput.value.trim() && state.searchResults.length) {
+      state.searchResultsVisible = true;
+      updateSearchResults(state, refs, (systemId, planetId) => focusSystem(state, refs, controls, systemId, planetId));
+    }
+  });
+
   refs.filterToggle.addEventListener('click', () => {
-    state.filterCollapsed = !state.filterCollapsed;
-    refs.filterPanel.classList.toggle('is-collapsed', state.filterCollapsed);
-    refs.filterToggle.textContent = state.filterCollapsed ? 'Expand' : 'Collapse';
+    if (!state.introComplete) {
+      return;
+    }
+
+    const shouldClose = state.filtersVisible && state.filtersPinned;
+    if (shouldClose) {
+      hideCommandDeckPanels(state, refs);
+      refs.searchInput.blur();
+      return;
+    }
+
+    setFiltersVisible(state, refs, true, true);
+    refs.searchInput.focus({ preventScroll: true });
   });
 
   document.querySelectorAll('[data-filter-group]').forEach((button) => {
@@ -907,15 +1062,24 @@ async function init() {
 
   refs.searchInput.addEventListener('input', () => {
     runSearch(state, refs.searchInput.value);
+    setFiltersVisible(state, refs, true, state.filtersPinned);
     updateSearchResults(state, refs, (systemId, planetId) => focusSystem(state, refs, controls, systemId, planetId));
     updateStarAttributes(state, starField, refs);
   });
 
   refs.searchInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.stopPropagation();
+      hideCommandDeckPanels(state, refs);
+      refs.searchInput.blur();
+      return;
+    }
+
     if (event.key === 'Enter' && state.searchResults.length) {
       const [firstResult] = state.searchResults;
       focusSystem(state, refs, controls, firstResult.systemId, firstResult.planetId ?? null);
       refs.searchResults.classList.remove('is-visible');
+      refs.searchInput.blur();
     }
   });
 
@@ -924,7 +1088,21 @@ async function init() {
     updateStarAttributes(state, starField, refs);
   });
 
+  document.addEventListener('pointerdown', (event) => {
+    if (!state.introComplete) {
+      return;
+    }
+
+    if (!refs.commandDeck.contains(event.target)) {
+      hideCommandDeckPanels(state, refs);
+    }
+  });
+
   refs.canvas.addEventListener('pointermove', (event) => {
+    if (!state.introComplete) {
+      return;
+    }
+
     const rect = refs.canvas.getBoundingClientRect();
     state.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     state.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
@@ -941,9 +1119,12 @@ async function init() {
   });
 
   refs.canvas.addEventListener('click', async () => {
+    if (!state.introComplete) {
+      return;
+    }
+
     if (!audioEngine.started) {
-      const started = await audioEngine.start();
-      refs.audioStatus.textContent = started ? 'Normandy hum online' : 'Audio unavailable';
+      await audioEngine.start();
     }
 
     if (state.hoveredSystemId) {
@@ -959,6 +1140,10 @@ async function init() {
       return;
     }
 
+    if (!state.introComplete) {
+      return;
+    }
+
     if (['KeyW', 'KeyA', 'KeyS', 'KeyD'].includes(event.code)) {
       state.keys.add(event.code);
     }
@@ -969,6 +1154,11 @@ async function init() {
   });
 
   function updateHover() {
+    if (!state.introComplete) {
+      refs.tooltip.classList.remove('is-visible');
+      return;
+    }
+
     if (!state.needsHoverUpdate) {
       return;
     }
@@ -998,15 +1188,23 @@ async function init() {
     }
   }
 
-  function updateFps() {
+  function updateFps(delta) {
+    if (state.introComplete && state.performanceGate.active && Number.isFinite(delta) && delta > 0) {
+      state.performanceGate.samples.push(1 / delta);
+      if (state.performanceGate.samples.length > PERFORMANCE_SAMPLE_COUNT) {
+        state.performanceGate.samples.shift();
+      }
+      maybeReduceEffects(state);
+    }
+
     if (!import.meta.env.DEV || !refs.fpsBadge) {
       return;
     }
 
     const now = performance.now();
-    const delta = now - state.lastFrameTime;
+    const frameDelta = now - state.lastFrameTime;
     state.lastFrameTime = now;
-    state.fpsHistory.push(1000 / Math.max(delta, 1));
+    state.fpsHistory.push(1000 / Math.max(frameDelta, 1));
     if (state.fpsHistory.length > 30) {
       state.fpsHistory.shift();
     }
@@ -1015,6 +1213,7 @@ async function init() {
   }
 
   updateStarAttributes(state, starField, refs);
+  startIntroSequence(state, refs, camera, controls);
 
   function animate() {
     const delta = clock.getDelta();
@@ -1025,14 +1224,15 @@ async function init() {
     controls.update();
     updateHover();
     updateTooltip(state, refs);
-    updateFps();
+    updateFps(delta);
 
     dust.rotation.y += delta * 0.01;
     dust.rotation.x += delta * 0.004;
 
     nebulaPlanes.forEach((plane, index) => {
       plane.lookAt(camera.position);
-      plane.position.x += Math.sin(clock.elapsedTime * 0.03 + index) * 0.01;
+      plane.position.x = plane.userData.anchor.x + Math.sin(clock.elapsedTime * 0.05 + index) * 0.45;
+      plane.position.y = plane.userData.anchor.y + Math.cos(clock.elapsedTime * 0.04 + index * 0.8) * 0.3;
     });
 
     composer.render();
