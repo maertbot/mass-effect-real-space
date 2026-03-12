@@ -1,15 +1,17 @@
 {
   "name": "mass-effect-real-space",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Mass Effect-inspired 3D galaxy map of NASA exoplanets",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "data:build": "node scripts/build-exoplanets-json.mjs",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "dependencies": {
     "gh-pages": "^6.3.0",
     "three": "^0.183.2",
