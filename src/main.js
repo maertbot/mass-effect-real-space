@@ -1143,6 +1143,8 @@ function createStarField(renderableSystems) {
     blending: THREE.AdditiveBlending,
     uniforms: {
       uTime: { value: 0 },
+      uLocalExplore: { value: 0 },
+      uTargetPosition: { value: new THREE.Vector3() },
     },
     vertexShader: `
       attribute vec3 aColor;
@@ -1152,6 +1154,8 @@ function createStarField(renderableSystems) {
       attribute float aSearchMatch;
       attribute float aPulseOffset;
       uniform float uTime;
+      uniform float uLocalExplore;
+      uniform vec3 uTargetPosition;
       varying vec3 vColor;
       varying float vAlpha;
 
@@ -1161,10 +1165,14 @@ function createStarField(renderableSystems) {
         float pulse = 1.0 + aSearchMatch * (0.22 + 0.16 * sin(uTime * 3.6 + aPulseOffset * 6.28318));
         float focusBoost = 1.0 + aFocus * 1.5;
         float visibilityBoost = mix(0.22, 1.0, aVisibility);
-        gl_PointSize = aSize * distanceScale * pulse * focusBoost;
+        float localDistance = distance(position, uTargetPosition);
+        float localPriority = 1.0 - smoothstep(55.0, 230.0, localDistance);
+        float exploreScale = mix(1.0, mix(0.22, 1.0, localPriority), uLocalExplore);
+        float exploreAlpha = mix(1.0, mix(0.08, 1.0, localPriority), uLocalExplore);
+        gl_PointSize = aSize * distanceScale * pulse * focusBoost * mix(1.0, 0.55, uLocalExplore) * exploreScale;
         gl_Position = projectionMatrix * mvPosition;
-        vColor = mix(aColor * 0.26, aColor * (1.2 + aFocus * 0.65), visibilityBoost);
-        vAlpha = mix(0.12, 1.0, visibilityBoost) + aFocus * 0.12;
+        vColor = mix(aColor * 0.26, aColor * (1.2 + aFocus * 0.65), visibilityBoost) * mix(1.0, 0.9, uLocalExplore);
+        vAlpha = (mix(0.12, 1.0, visibilityBoost) + aFocus * 0.12) * exploreAlpha;
       }
     `,
     fragmentShader: `
@@ -1853,6 +1861,9 @@ async function init() {
   function animate() {
     const delta = clock.getDelta();
     starField.material.uniforms.uTime.value = clock.elapsedTime;
+    const exploreDistance = camera.position.distanceTo(controls.target);
+    starField.material.uniforms.uLocalExplore.value = 1.0 - THREE.MathUtils.smoothstep(exploreDistance, 150, 340);
+    starField.material.uniforms.uTargetPosition.value.copy(controls.target);
 
     updateKeyboardMovement(state, controls, delta);
     updateFlight(state, controls);
