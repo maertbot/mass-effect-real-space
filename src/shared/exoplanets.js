@@ -45,6 +45,14 @@ export const SURVEY_LABELS = ['Kepler', 'TESS', 'Ground-based', 'Other'];
 export const PLANET_TYPE_LABELS = ['Hot Jupiters', 'Rocky', 'Ice Giants', 'Super-Earths', 'Hab Zone'];
 export const SPECTRAL_CLASS_LABELS = ['M', 'K', 'G', 'F', 'A', 'B/O'];
 export const STAR_COLOR_FALLBACK = '#ffffee';
+export const PLANET_VISUAL_ACCENT_COLORS = {
+  'hot-jupiter': '#ff9f3f',
+  'rocky-hab-zone': '#9ecf6d',
+  'ice-giant': '#edf6ff',
+  'super-earth': '#d1ab7a',
+  rocky: '#b7bcc9',
+  default: '#afb6c5',
+};
 
 export function slugify(value) {
   return value
@@ -119,6 +127,11 @@ export function getPlanetCategories(planet = {}) {
     isSuperEarth,
     visualType,
   };
+}
+
+export function getPlanetAccentColor(planet = {}) {
+  const visualType = planet.categories?.visualType ?? getPlanetCategories(planet).visualType;
+  return PLANET_VISUAL_ACCENT_COLORS[visualType] ?? PLANET_VISUAL_ACCENT_COLORS.default;
 }
 
 export function categorizeSurvey(record = {}) {

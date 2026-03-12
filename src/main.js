@@ -7,7 +7,14 @@ import { gsap } from 'gsap';
 
 import { AudioEngine } from './audio-engine.js';
 import { PlanetPreview } from './planet-view.js';
-import { getStarColor, getStarSizeFromRadius, PLANET_TYPE_LABELS, SPECTRAL_CLASS_LABELS, SURVEY_LABELS } from './shared/exoplanets.js';
+import {
+  getPlanetAccentColor,
+  getStarColor,
+  getStarSizeFromRadius,
+  PLANET_TYPE_LABELS,
+  SPECTRAL_CLASS_LABELS,
+  SURVEY_LABELS,
+} from './shared/exoplanets.js';
 import './styles.css';
 
 const SCENE_SCALE = 0.05;
@@ -22,6 +29,14 @@ const INTRO_DURATION_SECONDS = 5;
 const PERFORMANCE_SAMPLE_COUNT = 180;
 const PERFORMANCE_FPS_THRESHOLD = 55;
 const TEXT_VALUE_FIELDS = new Set(['planetName', 'hostStar', 'discoveryMethod']);
+const ORBIT_RING_COLOR = '#4488ff';
+const ORBIT_RADIUS_MIN = 2.8;
+const ORBIT_RADIUS_MAX = 15.5;
+const ORBIT_RADIUS_GAP = 1.3;
+const ORBIT_DURATION_MIN = 5;
+const ORBIT_DURATION_MAX = 20;
+const ORBIT_FADE_DURATION_SECONDS = 0.5;
+const FULL_ORBIT = Math.PI * 2;
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -167,6 +182,46 @@ function createLayout(meta) {
           </section>
 
           <div class="tooltip glass-panel" data-tooltip></div>
+
+          <div class="legend-cluster" data-legend-cluster>
+            <button
+              class="legend-toggle glass-panel"
+              type="button"
+              aria-label="Explain dataset shape"
+              aria-expanded="false"
+              data-legend-toggle
+            >
+              <span aria-hidden="true">ℹ</span>
+            </button>
+
+            <article class="legend-card glass-panel" data-legend-card>
+              <h2 class="legend-title">Why this shape?</h2>
+
+              <p>
+                You are at the center. <span class="legend-accent">Earth</span> is at coordinate zero.
+              </p>
+
+              <p>
+                The bright core is <span class="legend-accent">nearby stars</span> — close enough for ground-based telescopes to
+                detect planets by watching stars wobble.
+              </p>
+
+              <p>
+                The elongated cone is the <span class="legend-accent">Kepler Space Telescope</span>'s field of view. Kepler stared
+                at one patch of sky in Cygnus for four years. Every planet in that cone was found by watching stars dim as planets
+                crossed in front of them.
+              </p>
+
+              <p>
+                The scattered points in other directions are from <span class="legend-accent">TESS</span> and ground-based surveys.
+              </p>
+
+              <p>
+                This map shows <span class="legend-accent">human observation bias</span>, not the real distribution of planets.
+                Exoplanets are everywhere — we've just barely begun to look.
+              </p>
+            </article>
+          </div>
 
           <footer class="corner-tools">
             <div class="corner-tools__meta">
@@ -366,6 +421,476 @@ function buildFieldValueMap(system, planet) {
   };
 }
 
+function hashString(value = '') {
+  return [...value].reduce((total, char, index) => total + char.charCodeAt(0) * (index + 1), 0);
+}
+
+function extractPlanetLetter(planet, fallbackIndex) {
+  const matched = planet.name.match(/(?:\s|-)([b-z])(?:\d+)?$/i);
+  if (matched) {
+    return matched[1].toLowerCase();
+  }
+
+  return String.fromCharCode(98 + (fallbackIndex % 24));
+}
+
+function getSemiMajorAxisAu(planet) {
+  const directValue = Number.parseFloat(planet.planet?.semiMajorAxisAu);
+  if (Number.isFinite(directValue) && directValue > 0) {
+    return directValue;
+  }
+
+  const orbitalPeriodDays = Number.parseFloat(planet.planet?.orbitalPeriodDays);
+  if (!Number.isFinite(orbitalPeriodDays) || orbitalPeriodDays <= 0) {
+    return null;
+  }
+
+  const orbitalPeriodYears = orbitalPeriodDays / 365.25;
+  return Math.cbrt(orbitalPeriodYears * orbitalPeriodYears);
+}
+
+function getOrbitalPeriodDays(planet, semiMajorAxisAu = getSemiMajorAxisAu(planet)) {
+  const directValue = Number.parseFloat(planet.planet?.orbitalPeriodDays);
+  if (Number.isFinite(directValue) && directValue > 0) {
+    return directValue;
+  }
+
+  if (!Number.isFinite(semiMajorAxisAu) || semiMajorAxisAu <= 0) {
+    return null;
+  }
+
+  return Math.pow(semiMajorAxisAu, 1.5) * 365.25;
+}
+
+function getOrbitDurationSeconds(orbitalPeriodDays, index, count) {
+  if (Number.isFinite(orbitalPeriodDays) && orbitalPeriodDays > 0) {
+    return clamp(4.8 + Math.log10(orbitalPeriodDays + 1) * 3.8, ORBIT_DURATION_MIN, ORBIT_DURATION_MAX);
+  }
+
+  const normalizedIndex = count <= 1 ? 0.35 : index / (count - 1);
+  return clamp(6 + normalizedIndex * 8, ORBIT_DURATION_MIN, ORBIT_DURATION_MAX);
+}
+
+function buildOrbitDescriptors(planets) {
+  const descriptors = planets.map((planet, index) => {
+    const semiMajorAxisAu = getSemiMajorAxisAu(planet);
+
+    return {
+      planet,
+      sortIndex: index,
+      label: extractPlanetLetter(planet, index),
+      semiMajorAxisAu,
+      orbitalPeriodDays: getOrbitalPeriodDays(planet, semiMajorAxisAu),
+      orbitRadius: ORBIT_RADIUS_MIN,
+      orbitDurationSeconds: ORBIT_DURATION_MIN,
+      initialAngle: ((hashString(planet.id) % 360) / 360) * FULL_ORBIT + index * 0.55,
+    };
+  });
+
+  descriptors.sort((left, right) => {
+    const leftAxis = Number.isFinite(left.semiMajorAxisAu) ? left.semiMajorAxisAu : Number.POSITIVE_INFINITY;
+    const rightAxis = Number.isFinite(right.semiMajorAxisAu) ? right.semiMajorAxisAu : Number.POSITIVE_INFINITY;
+
+    if (leftAxis !== rightAxis) {
+      return leftAxis - rightAxis;
+    }
+
+    return left.sortIndex - right.sortIndex;
+  });
+
+  if (descriptors.length === 1) {
+    descriptors[0].orbitRadius = 6.6;
+    descriptors[0].orbitDurationSeconds = getOrbitDurationSeconds(descriptors[0].orbitalPeriodDays, 0, 1);
+    return descriptors;
+  }
+
+  const knownLogs = descriptors
+    .filter((entry) => Number.isFinite(entry.semiMajorAxisAu) && entry.semiMajorAxisAu > 0)
+    .map((entry) => Math.log10(entry.semiMajorAxisAu));
+  const minLog = knownLogs.length ? Math.min(...knownLogs) : 0;
+  const maxLog = knownLogs.length ? Math.max(...knownLogs) : 0;
+  const span = ORBIT_RADIUS_MAX - ORBIT_RADIUS_MIN;
+
+  descriptors.forEach((entry, index) => {
+    if (Number.isFinite(entry.semiMajorAxisAu) && entry.semiMajorAxisAu > 0 && maxLog > minLog) {
+      const normalized = (Math.log10(entry.semiMajorAxisAu) - minLog) / (maxLog - minLog);
+      entry.orbitRadius = ORBIT_RADIUS_MIN + normalized * span;
+    } else {
+      const normalized = descriptors.length <= 1 ? 0.5 : index / (descriptors.length - 1);
+      entry.orbitRadius = ORBIT_RADIUS_MIN + normalized * span;
+    }
+
+    if (index > 0) {
+      entry.orbitRadius = Math.max(entry.orbitRadius, descriptors[index - 1].orbitRadius + ORBIT_RADIUS_GAP);
+    }
+
+    entry.orbitDurationSeconds = getOrbitDurationSeconds(entry.orbitalPeriodDays, index, descriptors.length);
+  });
+
+  const maxRadius = descriptors[descriptors.length - 1]?.orbitRadius ?? ORBIT_RADIUS_MAX;
+  if (maxRadius > ORBIT_RADIUS_MAX) {
+    const minRadius = descriptors[0]?.orbitRadius ?? ORBIT_RADIUS_MIN;
+    const radiusSpan = Math.max(maxRadius - minRadius, 1);
+
+    descriptors.forEach((entry) => {
+      const normalized = (entry.orbitRadius - minRadius) / radiusSpan;
+      entry.orbitRadius = ORBIT_RADIUS_MIN + normalized * span;
+    });
+  }
+
+  return descriptors;
+}
+
+function createRadialGlowTexture() {
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+
+  const context = canvas.getContext('2d');
+  const gradient = context.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+  gradient.addColorStop(0.28, 'rgba(255, 255, 255, 0.82)');
+  gradient.addColorStop(0.62, 'rgba(255, 255, 255, 0.22)');
+  gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, size, size);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+function createOrbitLabelTexture(label) {
+  const width = 128;
+  const height = 64;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+
+  const context = canvas.getContext('2d');
+  context.clearRect(0, 0, width, height);
+  context.fillStyle = 'rgba(216, 228, 255, 0.92)';
+  context.font = '400 34px "JetBrains Mono", monospace';
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.fillText(label, width / 2, height / 2);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function createOrbitRingMaterial(innerRadius, outerRadius) {
+  return new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+    uniforms: {
+      uColor: { value: new THREE.Color(ORBIT_RING_COLOR) },
+      uOpacity: { value: 0 },
+      uInnerRadius: { value: innerRadius },
+      uOuterRadius: { value: outerRadius },
+      uIntensity: { value: 0.72 },
+    },
+    vertexShader: `
+      varying vec2 vLocalPosition;
+
+      void main() {
+        vLocalPosition = position.xy;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 uColor;
+      uniform float uOpacity;
+      uniform float uInnerRadius;
+      uniform float uOuterRadius;
+      uniform float uIntensity;
+      varying vec2 vLocalPosition;
+
+      void main() {
+        float radius = length(vLocalPosition);
+        float softness = max((uOuterRadius - uInnerRadius) * 0.68, 0.02);
+        float innerFade = smoothstep(uInnerRadius, uInnerRadius + softness, radius);
+        float outerFade = 1.0 - smoothstep(uOuterRadius - softness, uOuterRadius, radius);
+        float band = innerFade * outerFade;
+        float halo = 1.0 - smoothstep(uInnerRadius, uOuterRadius, radius);
+        float alpha = max(band, halo * 0.16) * uOpacity * (0.34 + uIntensity * 0.18);
+
+        if (alpha <= 0.001) {
+          discard;
+        }
+
+        vec3 color = uColor * (0.72 + uIntensity * 0.42 + halo * 0.24);
+        gl_FragColor = vec4(color, alpha);
+      }
+    `,
+  });
+}
+
+function setOrbitVisualizationOpacity(visualization, opacity) {
+  if (!visualization) {
+    return;
+  }
+
+  visualization.starCoreMaterial.opacity = opacity * 0.94;
+  visualization.starHaloMaterial.opacity = opacity * 0.58;
+
+  visualization.entries.forEach((entry) => {
+    const isActive = entry.planet.id === visualization.activePlanetId;
+    entry.ringMaterial.uniforms.uOpacity.value = opacity;
+    entry.ringMaterial.uniforms.uIntensity.value = isActive ? 1.1 : 0.72;
+    entry.dotMaterial.opacity = opacity * (isActive ? 0.98 : 0.82);
+    entry.haloMaterial.opacity = opacity * (isActive ? 0.96 : 0.64);
+    entry.labelMaterial.opacity = opacity * (isActive ? 0.92 : 0.68);
+  });
+}
+
+function setOrbitActivePlanet(visualization, planetId) {
+  if (!visualization) {
+    return;
+  }
+
+  visualization.activePlanetId = planetId;
+
+  visualization.entries.forEach((entry) => {
+    const isActive = entry.planet.id === planetId;
+    entry.dot.scale.setScalar(isActive ? 0.38 : 0.28);
+    entry.halo.scale.set(isActive ? 1.8 : 1.35, isActive ? 1.8 : 1.35, 1);
+    entry.hitMesh.scale.setScalar(isActive ? 0.72 : 0.6);
+    entry.label.scale.set(isActive ? 0.98 : 0.84, isActive ? 0.5 : 0.42, 1);
+  });
+
+  setOrbitVisualizationOpacity(visualization, visualization.fadeState.value);
+}
+
+function createOrbitVisualization(state, system, selectedPlanetId) {
+  const planets = state.planetsBySystemId.get(system.id) ?? [];
+  if (!planets.length || !state.scene) {
+    return null;
+  }
+
+  const group = new THREE.Group();
+  group.position.copy(system.scenePosition);
+
+  const sphereGeometry = new THREE.SphereGeometry(1, 24, 24);
+  const hitGeometry = new THREE.SphereGeometry(1, 18, 18);
+  const glowTexture = createRadialGlowTexture();
+  const descriptors = buildOrbitDescriptors(planets);
+  const materials = new Set();
+  const geometries = new Set([sphereGeometry, hitGeometry]);
+  const textures = new Set([glowTexture]);
+  const hitTargets = [];
+
+  const starColor = getStarColor(system.spectralClass);
+  const starCoreMaterial = new THREE.MeshBasicMaterial({
+    color: starColor,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+  });
+  const starHaloMaterial = new THREE.SpriteMaterial({
+    map: glowTexture,
+    color: starColor,
+    transparent: true,
+    opacity: 0,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  materials.add(starCoreMaterial);
+  materials.add(starHaloMaterial);
+
+  const starCore = new THREE.Mesh(sphereGeometry, starCoreMaterial);
+  starCore.scale.setScalar(0.34);
+  const starHalo = new THREE.Sprite(starHaloMaterial);
+  starHalo.scale.set(3.1, 3.1, 1);
+
+  group.add(starHalo);
+  group.add(starCore);
+
+  const entries = descriptors.map((descriptor) => {
+    const ringThickness = clamp(0.16 + descriptor.orbitRadius * 0.012, 0.14, 0.32);
+    const ringGeometry = new THREE.RingGeometry(
+      Math.max(descriptor.orbitRadius - ringThickness, 0.2),
+      descriptor.orbitRadius + ringThickness,
+      192,
+    );
+    const ringMaterial = createOrbitRingMaterial(
+      Math.max(descriptor.orbitRadius - ringThickness, 0.2),
+      descriptor.orbitRadius + ringThickness,
+    );
+    const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+    ring.position.z = -0.01;
+
+    geometries.add(ringGeometry);
+    materials.add(ringMaterial);
+    group.add(ring);
+
+    const anchor = new THREE.Group();
+
+    const dotColor = getPlanetAccentColor(descriptor.planet);
+    const dotMaterial = new THREE.MeshBasicMaterial({
+      color: dotColor,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+    });
+    const haloMaterial = new THREE.SpriteMaterial({
+      map: glowTexture,
+      color: dotColor,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const hitMaterial = new THREE.MeshBasicMaterial({
+      color: dotColor,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+    });
+
+    materials.add(dotMaterial);
+    materials.add(haloMaterial);
+    materials.add(hitMaterial);
+
+    const dot = new THREE.Mesh(sphereGeometry, dotMaterial);
+    const halo = new THREE.Sprite(haloMaterial);
+    const hitMesh = new THREE.Mesh(hitGeometry, hitMaterial);
+    hitMesh.userData.planetId = descriptor.planet.id;
+    hitTargets.push(hitMesh);
+
+    const labelTexture = createOrbitLabelTexture(descriptor.label);
+    const labelMaterial = new THREE.SpriteMaterial({
+      map: labelTexture,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+    });
+
+    textures.add(labelTexture);
+    materials.add(labelMaterial);
+
+    const label = new THREE.Sprite(labelMaterial);
+
+    anchor.add(hitMesh);
+    anchor.add(halo);
+    anchor.add(dot);
+    anchor.add(label);
+    group.add(anchor);
+
+    return {
+      ...descriptor,
+      ring,
+      ringMaterial,
+      anchor,
+      dot,
+      dotMaterial,
+      halo,
+      haloMaterial,
+      hitMesh,
+      label,
+      labelMaterial,
+    };
+  });
+
+  const visualization = {
+    systemId: system.id,
+    group,
+    entries,
+    hitTargets,
+    starCoreMaterial,
+    starHaloMaterial,
+    fadeState: { value: 0 },
+    activePlanetId: selectedPlanetId,
+    orbitExtent: entries.reduce((largest, entry) => Math.max(largest, entry.orbitRadius), 0),
+    disposables: {
+      materials,
+      geometries,
+      textures,
+    },
+  };
+
+  setOrbitActivePlanet(visualization, selectedPlanetId);
+  setOrbitVisualizationOpacity(visualization, 0);
+  state.scene.add(group);
+
+  visualization.fadeTween = gsap.to(visualization.fadeState, {
+    value: 1,
+    duration: ORBIT_FADE_DURATION_SECONDS,
+    ease: 'power2.out',
+    onUpdate: () => setOrbitVisualizationOpacity(visualization, visualization.fadeState.value),
+  });
+
+  return visualization;
+}
+
+function removeOrbitVisualization(state) {
+  if (!state.orbitVisualization) {
+    return;
+  }
+
+  const { group, disposables, fadeTween } = state.orbitVisualization;
+  fadeTween?.kill();
+
+  if (group.parent) {
+    group.parent.remove(group);
+  }
+
+  disposables.materials.forEach((material) => material.dispose());
+  disposables.geometries.forEach((geometry) => geometry.dispose());
+  disposables.textures.forEach((texture) => texture.dispose());
+
+  state.orbitVisualization = null;
+  state.hoveredOrbitPlanetId = null;
+}
+
+function ensureOrbitVisualization(state, system, selectedPlanetId) {
+  if (!state.scene || !system?.scenePosition) {
+    removeOrbitVisualization(state);
+    return;
+  }
+
+  if (!state.orbitVisualization || state.orbitVisualization.systemId !== system.id) {
+    removeOrbitVisualization(state);
+    state.orbitVisualization = createOrbitVisualization(state, system, selectedPlanetId);
+    return;
+  }
+
+  setOrbitActivePlanet(state.orbitVisualization, selectedPlanetId);
+}
+
+function updateOrbitVisualization(state, elapsedTime) {
+  const visualization = state.orbitVisualization;
+  if (!visualization || !state.camera) {
+    return;
+  }
+
+  visualization.group.quaternion.copy(state.camera.quaternion);
+
+  visualization.entries.forEach((entry) => {
+    const angle = entry.initialAngle + (elapsedTime / entry.orbitDurationSeconds) * FULL_ORBIT;
+    const directionX = Math.cos(angle);
+    const directionY = Math.sin(angle);
+
+    entry.anchor.position.set(directionX * entry.orbitRadius, directionY * entry.orbitRadius, 0.02);
+    entry.label.position.set(directionX * 0.95 + Math.sign(directionX || 1) * 0.18, directionY * 0.95 + 0.2, 0);
+  });
+}
+
+function hitTestOrbitTargets(state, raycaster) {
+  const hitTargets = state.orbitVisualization?.hitTargets ?? [];
+  if (!hitTargets.length) {
+    return null;
+  }
+
+  const hit = raycaster.intersectObjects(hitTargets, false)[0];
+  return hit?.object?.userData?.planetId ?? null;
+}
+
 function createState(data) {
   const planetsBySystemId = new Map();
   const planetsById = new Map();
@@ -420,8 +945,14 @@ function createState(data) {
     pointer: new THREE.Vector2(2, 2),
     pointerScreen: { x: 0, y: 0 },
     needsHoverUpdate: true,
+    hoveredOrbitPlanetId: null,
     fpsHistory: [],
     lastFrameTime: performance.now(),
+    legendOpen: false,
+    orbitVisualization: null,
+    scene: null,
+    camera: null,
+    starField: null,
     performanceGate: {
       active: false,
       reduced: document.documentElement.classList.contains('effects-reduced'),
@@ -464,11 +995,25 @@ function setFiltersVisible(state, refs, visible, pinned = state.filtersPinned) {
   refs.searchShell.classList.toggle('is-active', visible || state.searchResultsVisible);
 }
 
+function setLegendOpen(state, refs, open) {
+  state.legendOpen = open;
+  refs.legendCluster.classList.toggle('is-open', open);
+  refs.legendToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
 function hideCommandDeckPanels(state, refs) {
   state.searchResultsVisible = false;
   setFiltersVisible(state, refs, false, false);
   refs.searchResults.classList.remove('is-visible');
   refs.searchShell.classList.toggle('is-active', false);
+}
+
+function updatePointerFromEvent(state, element, event) {
+  const rect = element.getBoundingClientRect();
+  state.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  state.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  state.pointerScreen.x = event.clientX;
+  state.pointerScreen.y = event.clientY;
 }
 
 function runSearch(state, query) {
@@ -524,7 +1069,9 @@ function updateSearchResults(state, refs, onResultClick) {
     .join('');
 
   refs.searchResults.querySelectorAll('.search-result').forEach((button) => {
-    button.addEventListener('click', () => {
+    button.addEventListener('click', (e) => {
+      e.stopPropagation();
+      refs.searchInput.blur();
       onResultClick(button.dataset.systemId, button.dataset.planetId ?? null);
     });
   });
@@ -757,6 +1304,7 @@ function focusSystem(state, refs, controls, systemId, planetId = null) {
 
   state.selectedSystemId = system.id;
   state.selectedPlanetId = selectedPlanet.id;
+  ensureOrbitVisualization(state, system, selectedPlanet.id);
   refs.scanPanel.classList.add('is-visible');
   refs.searchResults.classList.remove('is-visible');
   hideCommandDeckPanels(state, refs);
@@ -768,7 +1316,12 @@ function focusSystem(state, refs, controls, systemId, planetId = null) {
   revealPlanetData(state, refs, system, selectedPlanet);
 
   const direction = controls.object.position.clone().sub(controls.target).normalize();
-  const distance = clamp(getStarSizeFromRadius(system.radius) * 2 + CAMERA_PADDING, 24, 88);
+  const orbitExtent = state.orbitVisualization?.orbitExtent ?? 0;
+  const orbitDistance =
+    orbitExtent > 0 && state.camera
+      ? (orbitExtent / Math.tan(THREE.MathUtils.degToRad(state.camera.fov * 0.5))) * 1.24
+      : 0;
+  const distance = clamp(Math.max(getStarSizeFromRadius(system.radius) * 2 + CAMERA_PADDING, orbitDistance), 24, 96);
   const targetPosition = system.scenePosition.clone().add(direction.multiplyScalar(distance));
   const startTime = performance.now();
 
@@ -780,14 +1333,25 @@ function focusSystem(state, refs, controls, systemId, planetId = null) {
     fromTarget: controls.target.clone(),
     toTarget: system.scenePosition.clone(),
   };
+
+  if (state.starField) {
+    updateStarAttributes(state, state.starField, refs);
+  }
 }
 
 function closePanel(state, refs) {
   state.selectedSystemId = null;
   state.selectedPlanetId = null;
   state.flyAnimation = null;
+  state.hoveredOrbitPlanetId = null;
   clearScanTimers(state);
+  removeOrbitVisualization(state);
   refs.scanPanel.classList.remove('is-visible', 'is-scanning');
+  refs.canvas.style.cursor = '';
+
+  if (state.starField) {
+    updateStarAttributes(state, state.starField, refs);
+  }
 }
 
 function updateFlight(state, controls) {
@@ -926,6 +1490,8 @@ async function init() {
     planetPills: document.querySelector('[data-planet-pills]'),
     planetStage: document.querySelector('[data-planet-stage]'),
     tooltip: document.querySelector('[data-tooltip]'),
+    legendCluster: document.querySelector('[data-legend-cluster]'),
+    legendToggle: document.querySelector('[data-legend-toggle]'),
     closePanel: document.querySelector('[data-close-panel]'),
     fpsBadge: document.querySelector('[data-fps-badge]'),
     fieldValues: Object.fromEntries(
@@ -979,6 +1545,9 @@ async function init() {
   const starField = createStarField(state.renderableSystems);
   scene.add(starField.points);
   const nebulaPlanes = buildNebulaPlanes(scene, state.renderableSystems);
+  state.scene = scene;
+  state.camera = camera;
+  state.starField = starField;
 
   const dustGeometry = new THREE.BufferGeometry();
   const dustCount = 1400;
@@ -1085,12 +1654,20 @@ async function init() {
 
   refs.closePanel.addEventListener('click', () => {
     closePanel(state, refs);
-    updateStarAttributes(state, starField, refs);
+  });
+
+  refs.legendToggle.addEventListener('click', (event) => {
+    event.stopPropagation();
+    setLegendOpen(state, refs, !state.legendOpen);
   });
 
   document.addEventListener('pointerdown', (event) => {
     if (!state.introComplete) {
       return;
+    }
+
+    if (state.legendOpen && !refs.legendCluster.contains(event.target)) {
+      setLegendOpen(state, refs, false);
     }
 
     if (!refs.commandDeck.contains(event.target)) {
@@ -1103,40 +1680,51 @@ async function init() {
       return;
     }
 
-    const rect = refs.canvas.getBoundingClientRect();
-    state.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-    state.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-    state.pointerScreen.x = event.clientX;
-    state.pointerScreen.y = event.clientY;
+    updatePointerFromEvent(state, refs.canvas, event);
     state.needsHoverUpdate = true;
   });
 
   refs.canvas.addEventListener('pointerleave', () => {
     state.pointer.set(2, 2);
     state.hoveredSystemId = null;
+    state.hoveredOrbitPlanetId = null;
     state.needsHoverUpdate = true;
+    refs.canvas.style.cursor = '';
     audioEngine.clearHover();
   });
 
-  refs.canvas.addEventListener('click', async () => {
+  refs.canvas.addEventListener('click', async (event) => {
     if (!state.introComplete) {
       return;
     }
 
-    if (!audioEngine.started) {
-      await audioEngine.start();
+    updatePointerFromEvent(state, refs.canvas, event);
+    raycaster.setFromCamera(state.pointer, camera);
+
+    const orbitPlanetId = hitTestOrbitTargets(state, raycaster);
+    if (orbitPlanetId) {
+      focusSystem(state, refs, controls, state.selectedSystemId, orbitPlanetId);
+      return;
     }
 
     if (state.hoveredSystemId) {
+      if (!audioEngine.started) {
+        await audioEngine.start();
+      }
+
       focusSystem(state, refs, controls, state.hoveredSystemId);
-      updateStarAttributes(state, starField, refs);
+      return;
+    }
+
+    if (state.selectedSystemId) {
+      closePanel(state, refs);
     }
   });
 
   window.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       closePanel(state, refs);
-      updateStarAttributes(state, starField, refs);
+      setLegendOpen(state, refs, false);
       return;
     }
 
@@ -1166,6 +1754,22 @@ async function init() {
     state.needsHoverUpdate = false;
     raycaster.params.Points.threshold = clamp(camera.position.distanceTo(controls.target) * 0.02, 3.5, 12);
     raycaster.setFromCamera(state.pointer, camera);
+
+    const orbitPlanetId = hitTestOrbitTargets(state, raycaster);
+    if (orbitPlanetId) {
+      if (state.hoveredSystemId !== null) {
+        state.hoveredSystemId = null;
+        audioEngine.clearHover();
+        updateStarAttributes(state, starField, refs);
+      }
+
+      state.hoveredOrbitPlanetId = orbitPlanetId;
+      refs.canvas.style.cursor = 'pointer';
+      refs.tooltip.classList.remove('is-visible');
+      return;
+    }
+
+    state.hoveredOrbitPlanetId = null;
     const intersections = raycaster.intersectObject(starField.points);
     const hit = intersections[0];
     const nextHovered = hit ? state.renderableSystems[hit.index]?.id ?? null : null;
@@ -1186,6 +1790,8 @@ async function init() {
     } else {
       refs.tooltip.classList.remove('is-visible');
     }
+
+    refs.canvas.style.cursor = nextHovered ? 'pointer' : '';
   }
 
   function updateFps(delta) {
@@ -1225,6 +1831,7 @@ async function init() {
     updateHover();
     updateTooltip(state, refs);
     updateFps(delta);
+    updateOrbitVisualization(state, clock.elapsedTime);
 
     dust.rotation.y += delta * 0.01;
     dust.rotation.x += delta * 0.004;

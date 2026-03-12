@@ -332,6 +332,8 @@ a:focus-visible {
 .close-button:hover,
 .filter-chip:hover,
 .planet-pill:hover,
+.legend-cluster.is-open .legend-toggle,
+.legend-toggle:hover,
 .help-button:hover {
   border-color: rgba(255, 136, 0, 0.38);
   color: rgba(255, 255, 255, 0.96);
@@ -680,6 +682,89 @@ a:focus-visible {
   font-size: 0.68rem;
 }
 
+.legend-cluster {
+  position: absolute;
+  left: clamp(14px, 3vw, 28px);
+  bottom: clamp(14px, 3vw, 24px);
+  pointer-events: auto;
+}
+
+.legend-toggle {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background: rgba(10, 15, 30, 0.34);
+  color: var(--text-secondary);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.legend-toggle span {
+  transform: translateY(-0.5px);
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  line-height: 1;
+}
+
+.legend-card {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 10px);
+  width: min(300px, calc(100vw - 40px));
+  padding: 14px 16px 16px;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translate3d(-6px, 8px, 0) scale(0.985);
+  transition:
+    opacity 180ms ease,
+    transform 180ms ease,
+    visibility 180ms ease;
+}
+
+.legend-cluster:hover .legend-card,
+.legend-cluster.is-open .legend-card {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translate3d(0, 0, 0) scale(1);
+}
+
+.legend-cluster:hover .legend-card::after,
+.legend-cluster.is-open .legend-card::after,
+.legend-cluster:hover .legend-toggle::after,
+.legend-cluster.is-open .legend-toggle::after {
+  opacity: 0.28;
+}
+
+.legend-title {
+  margin: 0 0 10px;
+  color: rgba(255, 255, 255, 0.94);
+  font-size: 1.02rem;
+  font-weight: 300;
+  letter-spacing: 0.04em;
+}
+
+.legend-card p {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.84);
+  font-family: var(--font-ui);
+  font-size: 0.88rem;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.legend-card p + p {
+  margin-top: 10px;
+}
+
+.legend-accent {
+  color: var(--text-accent);
+}
+
 .corner-tools {
   position: absolute;
   right: clamp(14px, 3vw, 28px);
@@ -840,6 +925,11 @@ a:focus-visible {
     bottom: 14px;
   }
 
+  .legend-cluster {
+    left: 14px;
+    bottom: 14px;
+  }
+
   .scan-header {
     flex-direction: column;
   }
@@ -878,5 +968,9 @@ a:focus-visible {
   .archive-credit,
   .fps-badge {
     font-size: 0.56rem;
+  }
+
+  .legend-card {
+    width: min(300px, calc(100vw - 28px));
   }
 }
