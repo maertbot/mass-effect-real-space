@@ -183,6 +183,15 @@ function createLayout(meta) {
 
           <div class="tooltip glass-panel" data-tooltip></div>
 
+                    <button
+              class="sol-button glass-panel"
+              type="button"
+              aria-label="Fly to Sol"
+              data-sol-button
+            >
+              <span aria-hidden="true">☉</span> Sol
+            </button>
+
           <div class="legend-cluster" data-legend-cluster>
             <button
               class="legend-toggle glass-panel"
@@ -618,13 +627,13 @@ function createOrbitRingMaterial(innerRadius, outerRadius) {
         float outerFade = 1.0 - smoothstep(uOuterRadius - softness, uOuterRadius, radius);
         float band = innerFade * outerFade;
         float halo = 1.0 - smoothstep(uInnerRadius, uOuterRadius, radius);
-        float alpha = max(band, halo * 0.16) * uOpacity * (0.34 + uIntensity * 0.18);
+        float alpha = max(band, halo * 0.06) * uOpacity * (0.09 + uIntensity * 0.05);
 
         if (alpha <= 0.001) {
           discard;
         }
 
-        vec3 color = uColor * (0.72 + uIntensity * 0.42 + halo * 0.24);
+        vec3 color = uColor * (0.4 + uIntensity * 0.2 + halo * 0.1);
         gl_FragColor = vec4(color, alpha);
       }
     `,
@@ -642,10 +651,10 @@ function setOrbitVisualizationOpacity(visualization, opacity) {
   visualization.entries.forEach((entry) => {
     const isActive = entry.planet.id === visualization.activePlanetId;
     entry.ringMaterial.uniforms.uOpacity.value = opacity;
-    entry.ringMaterial.uniforms.uIntensity.value = isActive ? 1.1 : 0.72;
-    entry.dotMaterial.opacity = opacity * (isActive ? 0.98 : 0.82);
-    entry.haloMaterial.opacity = opacity * (isActive ? 0.96 : 0.64);
-    entry.labelMaterial.opacity = opacity * (isActive ? 0.92 : 0.68);
+    entry.ringMaterial.uniforms.uIntensity.value = isActive ? 0.6 : 0.35;
+    entry.dotMaterial.opacity = opacity * (isActive ? 0.45 : 0.25);
+    entry.haloMaterial.opacity = opacity * (isActive ? 0.35 : 0.18);
+    entry.labelMaterial.opacity = opacity * (isActive ? 0.55 : 0.30);
   });
 }
 
@@ -712,7 +721,7 @@ function createOrbitVisualization(state, system, selectedPlanetId) {
   group.add(starCore);
 
   const entries = descriptors.map((descriptor) => {
-    const ringThickness = clamp(0.16 + descriptor.orbitRadius * 0.012, 0.14, 0.32);
+    const ringThickness = clamp(0.08 + descriptor.orbitRadius * 0.006, 0.07, 0.16);
     const ringGeometry = new THREE.RingGeometry(
       Math.max(descriptor.orbitRadius - ringThickness, 0.2),
       descriptor.orbitRadius + ringThickness,
@@ -1492,6 +1501,7 @@ async function init() {
     tooltip: document.querySelector('[data-tooltip]'),
     legendCluster: document.querySelector('[data-legend-cluster]'),
     legendToggle: document.querySelector('[data-legend-toggle]'),
+    solButton: document.querySelector('[data-sol-button]'),
     closePanel: document.querySelector('[data-close-panel]'),
     fpsBadge: document.querySelector('[data-fps-badge]'),
     fieldValues: Object.fromEntries(
@@ -1659,6 +1669,25 @@ async function init() {
   refs.legendToggle.addEventListener('click', (event) => {
     event.stopPropagation();
     setLegendOpen(state, refs, !state.legendOpen);
+  });
+
+  refs.solButton.addEventListener('click', () => {
+    if (!state.introComplete) return;
+    hideCommandDeckPanels(state, refs);
+    setLegendOpen(state, refs, false);
+    // Sol is at the origin (0,0,0) — fly camera there
+    const direction = controls.object.position.clone().sub(controls.target).normalize();
+    const targetPosition = direction.multiplyScalar(220); // Far enough back to resolve nearby systems without bloom blowout
+    const startTime = performance.now();
+    const origin = new THREE.Vector3(0, 0, 0);
+    state.flyAnimation = {
+      startTime,
+      duration: 2000,
+      fromPosition: controls.object.position.clone(),
+      toPosition: targetPosition,
+      fromTarget: controls.target.clone(),
+      toTarget: origin,
+    };
   });
 
   document.addEventListener('pointerdown', (event) => {
@@ -1841,6 +1870,12 @@ async function init() {
       plane.position.x = plane.userData.anchor.x + Math.sin(clock.elapsedTime * 0.05 + index) * 0.45;
       plane.position.y = plane.userData.anchor.y + Math.cos(clock.elapsedTime * 0.04 + index * 0.8) * 0.3;
     });
+
+    // Distance-based bloom: full bloom when zoomed out, fades as we zoom into dense regions
+    const camDist = camera.position.distanceTo(controls.target);
+    const bloomFade = THREE.MathUtils.smoothstep(camDist, 90, 260);
+    bloomPass.strength = BLOOM_STRENGTH * (0.02 + bloomFade * 0.98);
+    bloomPass.radius = BLOOM_RADIUS * (0.12 + bloomFade * 0.88);
 
     composer.render();
     requestAnimationFrame(animate);

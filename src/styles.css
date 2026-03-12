@@ -682,6 +682,27 @@ a:focus-visible {
   font-size: 0.68rem;
 }
 
+.sol-button {
+  position: absolute;
+  left: clamp(14px, 3vw, 28px);
+  bottom: clamp(58px, calc(3vw + 44px), 72px);
+  pointer-events: auto;
+  padding: 6px 14px;
+  font-family: 'Space Grotesk', system-ui, sans-serif;
+  font-size: 0.72rem;
+  font-weight: 400;
+  letter-spacing: 0.12em;
+  color: rgba(255, 136, 0, 0.55);
+  cursor: pointer;
+  border-radius: 17px;
+  transition: color 0.25s, border-color 0.25s;
+}
+
+.sol-button:hover {
+  color: rgba(255, 136, 0, 0.85);
+  border-color: rgba(255, 136, 0, 0.35);
+}
+
 .legend-cluster {
   position: absolute;
   left: clamp(14px, 3vw, 28px);
