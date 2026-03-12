@@ -13,9 +13,9 @@ import './styles.css';
 const SCENE_SCALE = 0.05;
 const CAMERA_PADDING = 28;
 const SEARCH_RESULT_LIMIT = 8;
-const BLOOM_STRENGTH = 1.05;
-const BLOOM_RADIUS = 0.72;
-const BLOOM_THRESHOLD = 0.05;
+const BLOOM_STRENGTH = 0.22;
+const BLOOM_RADIUS = 0.35;
+const BLOOM_THRESHOLD = 0.4;
 const DEFAULT_CAMERA_POSITION = new THREE.Vector3(0, 120, 450);
 const INTRO_CAMERA_MULTIPLIER = 5;
 const INTRO_DURATION_SECONDS = 5;
@@ -621,11 +621,11 @@ function createStarField(renderableSystems) {
         if (radius > 0.5) {
           discard;
         }
-        float core = smoothstep(0.18, 0.0, radius);
-        float glow = smoothstep(0.52, 0.0, radius);
-        float halo = pow(max(0.0, 1.0 - radius * 1.85), 3.5);
-        vec3 color = vColor * (0.35 + glow * 0.9 + core * 1.5 + halo * 0.55);
-        float alpha = (glow * 0.68 + core * 0.42 + halo * 0.32) * vAlpha;
+        float core = smoothstep(0.15, 0.0, radius);
+        float glow = smoothstep(0.48, 0.0, radius);
+        float halo = pow(max(0.0, 1.0 - radius * 2.0), 4.0);
+        vec3 color = vColor * (0.3 + glow * 0.55 + core * 0.85 + halo * 0.3);
+        float alpha = (glow * 0.55 + core * 0.35 + halo * 0.2) * vAlpha;
         gl_FragColor = vec4(color, alpha);
       }
     `,
